@@ -30,7 +30,7 @@ Used libraries:
 1. Open your C++ project with CLion.
 2. Create a `include` directory
 3. In CMakeLists.txt, add `target_include_directories(project_name PRIVATE include)` and replace `project_name` with your project's folder name.
-4. Clone the repository: `git clone https://github.com/vlaxcs/CSVObjectParser`
+4. Clone the repository: `git clone https://github.com/vlaxcs/CSV-Object-Parser-CPP`
 5. From the cloned repository, move `CSVParser.h` into your `include` folder.
 6. In the file you want to process your objects, include the library using `#include <CSVParser.h>`.
 
@@ -50,14 +50,13 @@ There are 2 ways CSV Object Parser can approach reaching data from the CSV file.
 
 2. Needs to know all constructor's arguments' type.
    - **TypeK** belongs to **K-th** argument of Object's constructor, only if Object's constructor has **N** (1, 2, ... K ..., N - 1, N) arguments.
-   - **N** should be the maximum-length Object's constructor ~ **Arity** (**Max. 40**).
    - Signature:\
      `CSVParser<Object, Type1, Type2, Type3 ... TypeN> all_objects;`
 
    - Example:\
      `CSVParser<Object, int, float, string, AnotherObject> all_objects;`
-        - **Works only** if the maximum-length constructor is Object(int _, float _, string _, *AnotherObject* _).
-        - If you need another object as argument (e.g. *AnotherObject*), this object should have a proper overload on **>>operator**.
+        - **Works only** if the one of the object's constructors is defined as `Object(int _, float _, string _, *AnotherObject* _)`.
+        - If another object is needed as argument (e.g. *AnotherObject*), this object should have a proper overload on **>>operator**.
 
 - Illegal: `CSVParser<Object>` with no type given. 
 - Be aware of this example: `CSVParser<int, float>` will build **int objects**, assuming that all your CSV cells can be read as **float**.
