@@ -265,7 +265,7 @@ project/
 
 *Then, in main.cpp you can access your file through* `../data/somedata.csv`.
 
-- houses.csv (separator: **:** | quote: **"** | header_row: **1** (default))
+- houses.csv (separator: **:** | quote: **"** | header_row: **1** (default)
 ```
 id:address:terrain
 1:"742 Evergreen Drive":121
@@ -330,7 +330,7 @@ int main(){
     // Inspecting retrieved objects (inspecting the containers)
     // Requires operator<< overload for both objects. (friend std::ostream & operator<<)
     houses_parser.inspect(all_houses);          // Using inspect because all_houses contains pure objects
-    rooms_parser.inspect_pointers(all_rooms);   // Using isnpect_pointers because all_rooms contains std::shared_ptr<Rooms>
+    rooms_parser.inspect_pointers(all_rooms);   // Using inspect_pointers because all_rooms contains std::shared_ptr<Rooms>
 }
 
 ```
