@@ -38,7 +38,7 @@ Used libraries:
 1. Open your C++ project with CLion.
 2. Create a new directory named `include`.
 3. In CMakeLists.txt, add `target_include_directories(project_name PRIVATE include)` and replace `project_name` with the argument specified in `project(project_name)`.
-4. In a new directory, clone the repository: `git clone https://github.com/vlaxcs/CSVObjectParser`
+4. In a new directory, clone the repository: `git clone https://github.com/vlaxcs/CSV-Object-Parser-CPP`
 5. From this directory, move `CSVParser.h` into your `include` folder.
 6. In the C++ source you want to process your objects, include the library using `#include <CSVParser.h>`.
 
@@ -159,7 +159,9 @@ There are 2 ways CSV Object Parser can approach reaching data from the CSV file.
 
 - ## How to use the library (Step by step example)
 
-**1. Create the objects. Ensure that you have a public constructor with all attributes you want to instance with CSV file's content.**
+**1. Install the library (follow [Installing steps](#installation)] (Additional: Use CLion).
+
+**2. Create the objects. Ensure that you have a public constructor with all attributes you want to instance with CSV file's content.**
 
 ```
 // Defining a subobject
@@ -249,9 +251,9 @@ public:
 };
 ```
 
-**2. Create your CSV files**
+**3. Create your CSV files**
 
-*Usually, your executable will be located at* `cmake-build-debug`. *You can create a hierarchy in your project:*
+*Usually, in CLion projects the executable will be located at* `cmake-build-debug`. *You can create a hierarchy in your project:*
 
 ```
 project/
@@ -291,7 +293,7 @@ id	house_id	room_name	capacity	surface
 10	5	Studio 	5	48
 ```
 
-**3. Use the library as described in *Syntax***
+**4. Use the library as described in *Syntax***
 ```
 // Assuming that the library will be used in main.cpp
 
