@@ -14,8 +14,15 @@
 #include <format>
 #include <set>
 
-/* ======= Allowed containers ======= */
-template<typename T>
+/* ======= Allowed containers & requirements ======= */
+
+template <typename T>
+struct is_unordered_map : std::false_type {};
+
+template <typename K, typename V, typename Hash, typename KeyEqual, typename Alloc>
+struct is_unordered_map<std::unordered_map<K, V, Hash, KeyEqual, Alloc>> : std::true_type {};
+
+template<typename>
 struct is_allowed_container : std::false_type {};
 
 template<typename T>
@@ -24,16 +31,17 @@ struct is_allowed_container<std::vector<T>> : std::true_type {};
 template<typename T>
 struct is_allowed_container<std::set<T>> : std::true_type {};
 
-template<typename TObject, template<typename> class Container>
-concept AllowedContainer = is_allowed_container<Container<TObject>>::value;
-
 template<typename T>
+concept AllowedContainer = is_allowed_container<T>::value;
+
+template<typename T, typename CT>
 concept HasIdMember = requires(T t) {
-    { t.id } -> std::convertible_to<int>;
+    { t.getId() } -> std::convertible_to<CT>;
 };
 
 
 /* ======= All CSV Exceptions ======= */
+
 template<typename TObject, typename... Types>
     requires(sizeof...(Types) > 0)
 class CSVParser;
@@ -130,7 +138,7 @@ class WrongHeaderLength final : public CSVException {
         requires(sizeof...(Types) > 0)
     friend class CSVParser;
 
-    WrongHeaderLength(
+    explicit WrongHeaderLength(
         const std::size_t expected_size,
         const std::vector<std::string> &header
     ) : CSVException(buildMessage(expected_size, header)) {
@@ -156,6 +164,23 @@ class WrongHeaderLength final : public CSVException {
             expected_size
         );
 
+        return oss.str();
+    }
+};
+
+// Illegal: Objects should the have operator<< overload defined.
+class InsufficientOverload final : public CSVException {
+    template<typename TObject, typename... Types>
+        requires(sizeof...(Types) > 0)
+    friend class CSVParser;
+
+    explicit InsufficientOverload(
+        const std::string& type_name
+    ) : CSVException(buildMessage(type_name)) {}
+
+    static std::string buildMessage(const std::string& type_name) {
+        std::ostringstream oss;
+        oss << std::format("{} Insufficient operator<< overload on object {}", error_mark, type_name);
         return oss.str();
     }
 };
@@ -286,27 +311,59 @@ private:
     [[nodiscard]] std::pair<bool, char> trust_header(const std::string &filename);
 
     // Parses a single CSV formatted row.
-   TObject parseObjectFromRow(const std::string &row);
+    TObject parseObjectFromRow(const std::string &row);
+
+    template <typename TCell>
+    TCell parseCSVCell(std::stringstream& ss, std::string cell);
+
+    struct NodeBase {
+        NodeBase *prev = nullptr;
+        NodeBase *next = nullptr;
+        std::string type;
+
+        virtual ~NodeBase() = default;
+    };
+
+    template<typename T>
+    struct NodeMT final : NodeBase {
+        std::tuple<T> single_tuple;
+    };
+
+    template<typename Head>
+    void parseMultipleTypesObjectFromRow(std::stringstream &ss, char delimiter, NodeBase *&current);
+
+    template<typename Head, typename... Tail>
+        requires(sizeof...(Tail) > 0)
+    void parseMultipleTypesObjectFromRow(std::stringstream &ss, char delimiter, NodeBase *&current);
+
+    template<typename T>
+    T extractAndAdvance(NodeBase *&node);
+
+    template<typename... NodeTypes>
+    std::tuple<NodeTypes...> buildTupleFromNodes(NodeBase *&node);
 
     void showStats(const std::string& filename) {
+        std::string log_delimiter(1, delimiter);
+        if (delimiter == '\t') {
+            log_delimiter = "[TAB \\t]";
+        }
         std::cout << std::format("[CSV Reader] Fetching data from {}", filename) << std::endl;
         if (custom_header) {
             std::cout << std::format("[CSV Reader] Set header to user's preferences.") << std::endl;
         } else {
-            std::cout << std::format("[CSV Reader] Set header from CSV (row: {} | delimiter: '{}')", header_row,
-                                     delimiter) << std::endl;
+            std::cout << std::format("[CSV Reader] Set header from CSV (row: {} | delimiter: '{}' | quote: '{}')", header_row,
+                                     log_delimiter, quote) << std::endl;
         }
-        std::cout << std::format("[CSV Reader] Will retrieve data from the first {} columns, separated by '{}'",
-                                 header.size(), delimiter) << std::endl;
+        std::cout << std::format("[CSV Reader] Will retrieve data from the first {} columns, separated by '{}', quoted with '{}'",
+                                 header.size(), log_delimiter, quote) << std::endl;
     }
 
 public:
     // Create a CSV Parser using a predefined header.
     explicit CSVParser(const std::vector<std::string> &header_)
         : header({}),
-          has_id(HasIdMember<TObject>),
           delimiter('\0'),
-          quote('\0'),
+          quote('"'),
           header_row(1){
         try {
             setHeader(header_);
@@ -317,7 +374,7 @@ public:
 
     // Create a CSV Parser using default CSV file's header.
     explicit CSVParser()
-        : header({}), has_id(HasIdMember<TObject>), delimiter('\0'), quote('\0'),  header_row(1){
+        : header({}), delimiter('\0'), quote('"'),  header_row(1){
     }
 
     // Set the CSV file's delimiter symbol.
@@ -339,13 +396,89 @@ public:
         header_row = row;
     }
 
+    void initialize(std::string& row, std::ifstream& file, const std::string& filename) {
+        const std::pair<int, char> parseType(this->trust_header(filename));
+
+        custom_header = parseType.first;
+        delimiter = parseType.second;
+
+        if (!file.is_open()) {
+            throw FileOpenException(filename);
+        }
+
+        showStats(filename);
+        int row_counter(1);
+        do {
+            std::getline(file, row);
+            row_counter++;
+        } while (row_counter == header_row);
+    }
+
+    template<template<typename...> class Container, typename K>
+        requires(HasIdMember<TObject, K> && is_unordered_map<Container<K, TObject>>::value)
+    Container<K, TObject> parseObjectsFromFile(const std::string &filename);
+
     template<template<typename> class Container>
-        requires AllowedContainer<TObject, Container>
+        requires AllowedContainer<Container<TObject>>
     Container<TObject> parseObjectsFromFile(const std::string &filename);
+
+    template<template<typename...> class Container, typename K>
+        requires(HasIdMember<TObject, K> && is_unordered_map<Container<K, std::shared_ptr<TObject>>>::value)
+    Container<K, std::shared_ptr<TObject>> parsePointerObjectsFromFile(const std::string &filename);
+
+    template<template<typename> class Container>
+        requires AllowedContainer<Container<TObject>>
+    Container<std::shared_ptr<TObject>> parsePointerObjectsFromFile(const std::string &filename);
+
+    void inspect(const auto& container) {
+        try {
+            for (const auto& head : header) {
+                std::cout << head << "\t";
+            }
+            std::cout << std::endl;
+            for (const auto& unit : container) {
+                try {
+                    if constexpr (is_unordered_map<std::decay_t<decltype(container)>>::value) {
+                        std::cout << unit.second << std::endl;
+                    } else {
+                        std::cout << unit << std::endl;
+                    }
+                } catch (std::exception&) {
+                    throw InsufficientOverload(typeid(unit).name());
+                }
+            }
+        } catch (InsufficientOverload&) {
+            throw;
+        }
+    }
+
+    void inspect_pointers(const auto& container) {
+        try {
+            for (const auto& head : header) {
+                std::cout << head << "\t";
+            }
+            std::cout << std::endl;
+            for (const auto& unit : container) {
+                try {
+                    if constexpr (is_unordered_map<std::decay_t<decltype(container)>>::value) {
+                        std::cout << *unit.second << std::endl;
+                    } else {
+                        std::cout << *unit << std::endl;
+                    }
+                } catch (std::exception&) {
+                    throw InsufficientOverload(typeid(unit).name());
+                }
+            }
+        } catch (InsufficientOverload&) {
+            throw;
+        }
+    }
 
     ~CSVParser() = default;
 };
 
+
+/* ======= Header checker ======= */
 
 template<typename TObject, typename... Types>
     requires(sizeof...(Types) > 0)
@@ -370,8 +503,7 @@ std::pair<bool, char> CSVParser<TObject, Types...>::trust_header(const std::stri
         std::vector<std::string> try_header;
 
         while (std::getline(ss, cell, delimiter)) {
-            // try_header.push_back(parseCell(ss, cell, delimiter));
-            try_header.push_back(cell);
+            try_header.push_back(parseCSVCell<std::string>(ss, cell));
         }
 
         // If the custom header is not defined, set the default header from CSV file.
@@ -400,8 +532,7 @@ std::pair<bool, char> CSVParser<TObject, Types...>::trust_header(const std::stri
         std::vector<std::string> try_header;
 
         while (std::getline(ss, cell, current_delimiter)) {
-            // try_header.push_back(parseCell(ss, cell, delimiter));
-            try_header.push_back(cell);
+            try_header.push_back(parseCSVCell<std::string>(ss, cell));
         }
 
         if (try_header.size() == header.size() && !header.empty()) {
@@ -454,58 +585,121 @@ std::pair<bool, char> CSVParser<TObject, Types...>::trust_header(const std::stri
 }
 
 
+/* ======= Parse pointer objects from a file ======= */
+
+// Specialization for unordered_map
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template<template<typename...> class Container, typename K>
+    requires(HasIdMember<TObject, K> && is_unordered_map<Container<K, std::shared_ptr<TObject>>>::value)
+Container<K, std::shared_ptr<TObject>> CSVParser<TObject, Types...>::parsePointerObjectsFromFile(const std::string &filename) {
+    std::string row;
+    std::ifstream file(filename);
+    initialize(row, file, filename);
+
+    Container<K, std::shared_ptr<TObject>> result;
+    while (std::getline(file, row)) {
+        if (row.empty()) {
+            continue;
+        }
+        TObject newObject = this->parseObjectFromRow(row);
+        result[newObject.getId()] = std::make_shared<TObject>(newObject);
+    }
+
+    return result;
+}
+
+// Specialization for other allowed types of containers
 template<typename TObject, typename... Types>
     requires(sizeof...(Types) > 0)
 template<template<typename> class Container>
-    requires AllowedContainer<TObject, Container>
-Container<TObject> CSVParser<TObject, Types...>::parseObjectsFromFile(const std::string &filename) {
+    requires AllowedContainer<Container<TObject>>
+Container<std::shared_ptr<TObject>> CSVParser<TObject, Types...>::parsePointerObjectsFromFile(const std::string &filename) {
     try {
-        const std::pair<int, char> parseType(this->trust_header(filename));
-
-        custom_header = parseType.first;
-        delimiter = parseType.second;
-
+        std::string row;
         std::ifstream file(filename);
-        if (!file.is_open()) {
-            throw FileOpenException(filename);
+        initialize(row, file, filename);
+
+        // Retrieves data from a row and add the object in the container.
+        Container<std::shared_ptr<TObject>> result;
+
+        while (std::getline(file, row)) {
+            if (row.empty()) {
+                continue;
+            }
+            if constexpr (std::is_same_v<Container<TObject>, std::vector<TObject>>) {
+                result.push_back(std::make_shared<TObject>(this->parseObjectFromRow(row)));
+            } else if constexpr (std::is_same_v<Container<TObject>, std::set<TObject>>) {
+                result.emplace(std::make_shared<TObject>(this->parseObjectFromRow(row)));
+            } else if constexpr (std::is_same_v<Container<TObject>, std::unordered_map<int, TObject>>) {
+                TObject newObject = this->parseObjectFromRow(row);
+                result[has_id ? newObject.id : ++objectIdCounter] = std::make_shared<TObject>(newObject);
+            }
         }
 
-        showStats(filename);
+        return result;
 
-        // Consume all rows before header.
+    } catch (const WrongHeaderLength&) {
+        throw;
+    } catch (const CSVException &exception) {
+        std::clog << exception.what() << std::endl;
+        return {};
+    } catch (...) {
+        std::clog << "[CSV Parser ERROR] Unexpected exception has occurred." << std::endl;
+        return {};
+    }
+}
+
+
+/* ======= Parse raw objects from a file ======= */
+
+// Specialization for unordered_map
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template<template<typename...> class Container, typename K>
+    requires(HasIdMember<TObject, K> && is_unordered_map<Container<K, TObject>>::value)
+Container<K, TObject> CSVParser<TObject, Types...>::parseObjectsFromFile(const std::string &filename) {
+    std::string row;
+    std::ifstream file(filename);
+    initialize(row, file, filename);
+
+    Container<K, TObject> result;
+    while (std::getline(file, row)) {
+        if (row.empty()) {
+            continue;
+        }
+        TObject newObject = this->parseObjectFromRow(row);
+        result[newObject.getId()] = newObject;
+    }
+
+    return result;
+}
+
+// Specialization for other allowed types of containers
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template<template<typename> class Container>
+    requires AllowedContainer<Container<TObject>>
+Container<TObject> CSVParser<TObject, Types...>::parseObjectsFromFile(const std::string &filename) {
+    try {
         std::string row;
-        int row_counter(1);
-        do {
-            std::getline(file, row);
-            row_counter++;
-        } while (row_counter == header_row);
+        std::ifstream file(filename);
+        initialize(row, file, filename);
 
         // Retrieves data from a row and add the object in the container.
         Container<TObject> result;
 
-        if constexpr (std::is_same_v<Container<TObject>, std::vector<TObject>>) {
-            while (std::getline(file, row)) {
-                if (row.empty()) {
-                    continue;
-                }
-                TObject newObject = this->parseObjectFromRow(row);
-                result.push_back(std::move(newObject));
+        while (std::getline(file, row)) {
+            if (row.empty()) {
+                continue;
             }
-        } else if constexpr (std::is_same_v<Container<TObject>, std::set<TObject>>) {
-            while (std::getline(file, row)) {
-                if (row.empty()) {
-                    continue;
-                }
+            if constexpr (std::is_same_v<Container<TObject>, std::vector<TObject>>) {
+                result.push_back(this->parseObjectFromRow(row));
+            } else if constexpr (std::is_same_v<Container<TObject>, std::set<TObject>>) {
+                result.emplace(this->parseObjectFromRow(row));
+            } else if constexpr (std::is_same_v<Container<TObject>, std::unordered_map<int, TObject>>) {
                 TObject newObject = this->parseObjectFromRow(row);
-                result.emplace(std::move(newObject));
-            }
-        } else if constexpr (std::is_same_v<Container<TObject>, std::unordered_map<int, TObject>>) {
-            while (std::getline(file, row)) {
-                if (row.empty()) {
-                    continue;
-                }
-                TObject newObject = this->parseObjectFromRow(row);
-                result[has_id ? newObject.id : ++objectIdCounter] = newObject;
+                result[has_id ? newObject.id : ++objectIdCounter] = std::make_shared<TObject>(newObject);
             }
         }
 
@@ -539,34 +733,18 @@ TObject constructObjectUniqueTypeArgs(const std::vector<UniqueType> &vec) {
 
 
 /* ======= Parsing Multiple Type object ======= */
-struct NodeBase {
-    NodeBase *prev = nullptr;
-    NodeBase *next = nullptr;
-    std::string type;
 
-    virtual ~NodeBase() = default;
-};
-
-template<typename T>
-struct NodeMT final : NodeBase {
-    std::tuple<T> single_tuple;
-};
-
-template<typename Head>
-void parseMTRow(std::stringstream &ss, const char delimiter, NodeBase *&current) {
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template<typename Head>     // Base recursion level
+void CSVParser<TObject, Types...>::parseMultipleTypesObjectFromRow(std::stringstream &ss, const char delimiter, NodeBase *&current) {
     std::string cell;
     std::getline(ss, cell, delimiter);
 
     auto *node = new NodeMT<Head>();
 
     try {
-        std::istringstream iss(cell);
-        Head value;
-        iss >> value;
-        if (iss.fail()) {
-            throw std::runtime_error("Parse error");
-        }
-        node->single_tuple = std::make_tuple(value);
+        node->single_tuple = std::make_tuple(parseCSVCell<Head>(ss, cell));
     } catch (...) {
         node->single_tuple = std::make_tuple(Head{});
     }
@@ -581,22 +759,18 @@ void parseMTRow(std::stringstream &ss, const char delimiter, NodeBase *&current)
     current = node;
 }
 
-template<typename Head, typename... Tail>
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template<typename Head, typename... Tail>       // Advancing recursion level
     requires(sizeof...(Tail) > 0)
-void parseMTRow(std::stringstream &ss, const char delimiter, NodeBase *&current) {
+void CSVParser<TObject, Types...>::parseMultipleTypesObjectFromRow(std::stringstream &ss, const char delimiter, NodeBase *&current) {
     std::string cell;
     std::getline(ss, cell, delimiter);
 
     auto *node = new NodeMT<Head>();
 
     try {
-        std::istringstream iss(cell);
-        Head value;
-        iss >> value;
-        if (iss.fail()) {
-            throw std::runtime_error("Parse error");
-        }
-        node->single_tuple = std::make_tuple(value);
+        node->single_tuple = std::make_tuple(parseCSVCell<Head>(ss, cell));
     } catch (...) {
         node->single_tuple = std::make_tuple(Head{});
     }
@@ -611,12 +785,17 @@ void parseMTRow(std::stringstream &ss, const char delimiter, NodeBase *&current)
     current = node;
 
     if (sizeof...(Tail) > 0) {
-        parseMTRow<Tail...>(ss, delimiter, current);
+        parseMultipleTypesObjectFromRow<Tail...>(ss, delimiter, current);
     }
 }
 
+
+/* ======= Tuple builder (from dynamic double linked array) ======= */
+
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
 template<typename T>
-T extractAndAdvance(NodeBase *&node) {
+T CSVParser<TObject, Types...>::extractAndAdvance(NodeBase *&node) {
     auto *typed = dynamic_cast<NodeMT<T> *>(node);
     if (!typed) {
         throw std::runtime_error("Type mismatch during object construction.");
@@ -626,39 +805,79 @@ T extractAndAdvance(NodeBase *&node) {
     return val;
 }
 
-template<typename... Types>
-std::tuple<Types...> buildTupleFromNodes(NodeBase *&node) {
+
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template<typename... NodeTypes>
+std::tuple<NodeTypes...> CSVParser<TObject, Types...>::buildTupleFromNodes(NodeBase *&node) {
     return std::make_tuple(extractAndAdvance<Types>(node)...);
 }
 
 
-// Parse each row
+/* ======= CSV cell parsing (quotation sensible) ======= */
+
+template<typename TObject, typename... Types>
+    requires(sizeof...(Types) > 0)
+template <typename TCell>
+TCell CSVParser<TObject, Types...>::parseCSVCell(std::stringstream& ss, std::string cell) {
+    if (cell.empty()) {
+        return TCell{};
+    }
+
+    if constexpr (std::is_same_v<TCell, std::string>) {
+        if (cell.front() == quote) {
+            std::string temp;
+            cell.erase(0, 1);
+
+            if (!cell.empty() && cell.back() == quote) {
+                cell.pop_back();
+                return cell;
+            }
+
+            while (std::getline(ss, temp, delimiter)) {
+                cell += delimiter + temp;
+                if (!cell.empty() && cell.back() == quote) {
+                    cell.pop_back();
+                    break;
+                }
+
+                if (!std::getline(ss, temp, delimiter)) {
+                    throw std::runtime_error("Unterminated quoted field");
+                }
+            }
+        }
+        return cell;
+    }
+
+    std::istringstream iss(cell);
+    TCell value;
+    iss >> value;
+
+    if (iss.fail()) {
+        throw std::runtime_error("Failed to parse the cell");
+    }
+
+    return value;
+}
+
+
+/* ======= Parsing method selection ======= */
+
 template<typename TObject, typename... Types>
     requires(sizeof...(Types) > 0)
 TObject CSVParser<TObject, Types...>::parseObjectFromRow(const std::string &row) {
-    // TODO VERIFY IF BOOL ON CELLS, NOT ON ROWS - Do the proper cell reading
     if constexpr (sizeof...(Types) == 1) {
         std::vector<front_t> temp_values;
         std::stringstream ss(row);
         std::string cell;
         int current_cell_count(0);
 
-        while (std::getline(ss, cell, delimiter) && current_cell_count < header.size()) {
+        while (std::getline(ss, cell, delimiter) && current_cell_count++ < header.size()) {
             try {
-                std::istringstream iss(cell);
-                front_t value;
-                iss >> value;
-
-                if (iss.fail()) {
-                    throw std::runtime_error("Parse error");
-                }
-
-                temp_values.push_back(value);
+                temp_values.push_back(parseCSVCell<front_t>(ss, cell));
             } catch (std::exception &) {
                 temp_values.push_back(front_t(0));
             }
-
-            current_cell_count++;
         }
 
         if constexpr (std::is_same_v<TObject, std::vector<front_t>>) {
@@ -669,7 +888,7 @@ TObject CSVParser<TObject, Types...>::parseObjectFromRow(const std::string &row)
     } else {
         std::stringstream ss(row);
         NodeBase *current = nullptr;
-        parseMTRow<Types...>(ss, delimiter, current);
+        parseMultipleTypesObjectFromRow<Types...>(ss, delimiter, current);
 
         NodeBase *node = current;
 
