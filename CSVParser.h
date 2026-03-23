@@ -801,7 +801,7 @@ T CSVParser<TObject, Types...>::extractAndAdvance(NodeBase *&node) {
         throw std::runtime_error("Type mismatch during object construction.");
     }
     T val = std::get<0>(typed->single_tuple);
-    node = node->prev;
+    node = node->next;
     return val;
 }
 
@@ -810,7 +810,7 @@ template<typename TObject, typename... Types>
     requires(sizeof...(Types) > 0)
 template<typename... NodeTypes>
 std::tuple<NodeTypes...> CSVParser<TObject, Types...>::buildTupleFromNodes(NodeBase *&node) {
-    return std::make_tuple(extractAndAdvance<Types>(node)...);
+    return std::tuple<NodeTypes...>{extractAndAdvance<Types>(node)...};
 }
 
 
@@ -887,17 +887,20 @@ TObject CSVParser<TObject, Types...>::parseObjectFromRow(const std::string &row)
         }
     } else {
         std::stringstream ss(row);
-        NodeBase *current = nullptr;
-        parseMultipleTypesObjectFromRow<Types...>(ss, delimiter, current);
+        NodeBase *last_node = nullptr;
+        parseMultipleTypesObjectFromRow<Types...>(ss, delimiter, last_node);
 
-        NodeBase *node = current;
+        NodeBase *first_node = last_node;
+        while (first_node && first_node->prev) {
+            first_node = first_node->prev;
+        }
 
-        auto tuple = buildTupleFromNodes<Types...>(node);
+        auto tuple = buildTupleFromNodes<Types...>(first_node);
 
-        while (node) {
-            NodeBase *prev = node->prev;
-            delete prev;
-            node = prev;
+        while (last_node) {
+            const NodeBase *to_delete = last_node;
+            last_node = last_node->prev;
+            delete to_delete;
         }
 
         return std::make_from_tuple<TObject>(tuple);
